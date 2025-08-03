@@ -5,3 +5,5 @@ opencv-python
 opencv-python-headless 
 matplotlib
 tqdm
+labelImg
+ultralytics
