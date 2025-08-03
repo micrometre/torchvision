@@ -1,0 +1,6 @@
+imutils
+pillow
+Numpy
+opencv-python
+opencv-python-headless 
+matplotlib
