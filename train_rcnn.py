@@ -7,6 +7,7 @@ import os
 import sys
 import json
 import time
+import copy
 import datetime
 import argparse
 import numpy as np
@@ -105,19 +106,27 @@ class COCODataset(Dataset):
         
         return img, target
 
-def get_transform(train):
+def get_transform(train, input_size=320):
     transforms_list = []
+    # Resize images to smaller dimensions for faster processing
+    transforms_list.append(transforms.Resize((input_size, input_size)))
     # Convert PIL image to tensor and normalize
     transforms_list.append(transforms.ToTensor())
+    # Add normalization for better model performance
+    transforms_list.append(transforms.Normalize(mean=[0.485, 0.456, 0.406], 
+                                                std=[0.229, 0.224, 0.225]))
     if train:
-        # Add training augmentations here
+        # Add training augmentations specific for license plate detection
         transforms_list.append(transforms.RandomHorizontalFlip(0.5))
+        transforms_list.append(transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1))
+        # Add slight rotations to simulate different camera angles
+        transforms_list.append(transforms.RandomAffine(degrees=5, translate=(0.1, 0.1), scale=(0.9, 1.1)))
     return transforms.Compose(transforms_list)
 
 def get_model_instance_segmentation(num_classes):
-    # Load pre-trained model
-    model = torchvision.models.detection.fasterrcnn_resnet50_fpn(
-        weights=FasterRCNN_ResNet50_FPN_Weights.COCO_V1
+    # Option 1: Use smaller backbone (MobileNet instead of ResNet50)
+    model = torchvision.models.detection.fasterrcnn_mobilenet_v3_large_320_fpn(
+        weights=torchvision.models.detection.FasterRCNN_MobileNet_V3_Large_320_FPN_Weights.COCO_V1
     )
     
     # Replace the classifier with a new one for custom num_classes
@@ -134,11 +143,26 @@ def evaluate(model, data_loader, device):
         images = [img.to(device) for img in images]
         targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
         
-        with torch.no_grad():
-            loss_dict = model(images, targets)
-            losses = sum(loss for loss in loss_dict.values())
-            all_losses.append(losses.item())
+        try:
+            with torch.no_grad():
+                # Force the model to return losses by passing targets
+                outputs = model(images, targets)
+                
+                # Handle different return types
+                if isinstance(outputs, dict):
+                    # Standard loss dictionary
+                    losses = sum(loss for loss in outputs.values())
+                    all_losses.append(losses.item())
+                else:
+                    print("Warning: Model returned unexpected output type during evaluation")
+        except Exception as e:
+            print(f"Error during evaluation: {e}")
+            continue
     
+    if not all_losses:
+        print("Warning: No loss values were collected during evaluation.")
+        return float('inf')  # Return a high loss to avoid selecting this as best model
+        
     return sum(all_losses) / len(all_losses)
 
 def train_one_epoch(model, optimizer, data_loader, device, epoch, print_freq=10):
@@ -148,23 +172,35 @@ def train_one_epoch(model, optimizer, data_loader, device, epoch, print_freq=10)
     lr_scheduler = None
     
     for i, (images, targets) in enumerate(tqdm(data_loader, desc=f"Epoch {epoch}")):
-        images = [img.to(device) for img in images]
-        targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
-        
-        optimizer.zero_grad()
-        loss_dict = model(images, targets)
-        losses = sum(loss for loss in loss_dict.values())
-        
-        # Print losses
-        if i % print_freq == 0:
-            loss_str = ' '.join(f'{k}: {v.item():.4f}' for k, v in loss_dict.items())
-            print(f"Epoch: {epoch}, Batch: {i}/{len(data_loader)}, Losses: {loss_str}")
-        
-        losses.backward()
-        optimizer.step()
-        
-        all_losses.append(losses.item())
+        try:
+            images = [img.to(device) for img in images]
+            targets = [{k: v.to(device) for k, v in t.items()} for t in targets]
+            
+            optimizer.zero_grad()
+            loss_dict = model(images, targets)
+            
+            if isinstance(loss_dict, dict):
+                losses = sum(loss for loss in loss_dict.values())
+                
+                # Print losses
+                if i % print_freq == 0:
+                    loss_str = ' '.join(f'{k}: {v.item():.4f}' for k, v in loss_dict.items())
+                    print(f"Epoch: {epoch}, Batch: {i}/{len(data_loader)}, Losses: {loss_str}")
+                
+                losses.backward()
+                optimizer.step()
+                
+                all_losses.append(losses.item())
+            else:
+                print(f"Warning: Unexpected output type in batch {i}. Skipping.")
+        except Exception as e:
+            print(f"Error in batch {i}: {e}")
+            continue
     
+    if not all_losses:
+        print("Warning: No loss values were collected during training.")
+        return float('inf')
+        
     return sum(all_losses) / len(all_losses)
 
 def collate_fn(batch):
@@ -179,6 +215,38 @@ def save_model(model, optimizer, epoch, loss, output_dir, filename):
         'loss': loss,
     }
     torch.save(checkpoint, os.path.join(output_dir, filename))
+    
+    # Also save an optimized version for inference
+    if filename == "best_model.pth":
+        optimize_for_inference(model, output_dir)
+
+def optimize_for_inference(model, output_dir):
+    """Create an optimized version of the model for faster inference on CPU"""
+    # Make a copy of the model for quantization
+    model_quantized = copy.deepcopy(model)
+    model_quantized.eval()
+    
+    # Apply static quantization
+    try:
+        # Fuse Conv, BN and ReLU layers for better performance
+        model_quantized.qconfig = torch.quantization.get_default_qconfig('fbgemm')
+        model_quantized_prepared = torch.quantization.prepare(model_quantized)
+        model_quantized = torch.quantization.convert(model_quantized_prepared)
+        
+        # Save quantized model
+        torch.save(model_quantized.state_dict(), os.path.join(output_dir, "model_quantized.pth"))
+        print("Saved quantized model for faster CPU inference")
+    except Exception as e:
+        print(f"Quantization failed: {e}")
+        # Save a JIT traced model as fallback
+        try:
+            # Create a script module from the model
+            dummy_input = torch.randn(1, 3, 320, 320)
+            traced_model = torch.jit.trace(model, [dummy_input])
+            traced_model.save(os.path.join(output_dir, "model_traced.pt"))
+            print("Saved traced model for faster CPU inference")
+        except Exception as e:
+            print(f"Model tracing failed: {e}")
 
 def plot_losses(train_losses, val_losses, output_dir):
     plt.figure(figsize=(10, 5))
@@ -192,6 +260,70 @@ def plot_losses(train_losses, val_losses, output_dir):
     plt.savefig(os.path.join(output_dir, 'loss_plot.png'))
     plt.close()
 
+def visualize_predictions(model, data_loader, device, output_dir, num_images=5):
+    """Visualize predictions on validation set"""
+    model.eval()
+    images_seen = 0
+    
+    os.makedirs(os.path.join(output_dir, 'predictions'), exist_ok=True)
+    
+    # Mapping of label IDs to class names
+    label_map = {1: 'license_plate'}  # Adjust based on your dataset
+    
+    for images, targets in data_loader:
+        try:
+            images = [img.to(device) for img in images]
+            
+            with torch.no_grad():
+                # When calling the model without targets, it returns predictions
+                predictions = model(images)
+            
+            for i, (img_tensor, prediction, target) in enumerate(zip(images, predictions, targets)):
+                if images_seen >= num_images:
+                    break
+                    
+                # Convert tensor to PIL Image for drawing
+                img = F.to_pil_image(img_tensor.cpu())
+                draw = ImageDraw.Draw(img)
+                
+                # Draw ground truth bounding boxes in green
+                for box in target['boxes'].cpu().numpy():
+                    draw.rectangle(
+                        [(box[0], box[1]), (box[2], box[3])],
+                        outline='green',
+                        width=3
+                    )
+                
+                # Draw predicted bounding boxes in red
+                if 'boxes' in prediction and len(prediction['boxes']) > 0:
+                    for box, score, label in zip(
+                        prediction['boxes'].cpu().numpy(),
+                        prediction['scores'].cpu().numpy(),
+                        prediction['labels'].cpu().numpy()
+                    ):
+                        if score > 0.5:  # Only show predictions with confidence > 50%
+                            draw.rectangle(
+                                [(box[0], box[1]), (box[2], box[3])],
+                                outline='red',
+                                width=3
+                            )
+                            
+                            # Add score and label text
+                            label_text = f"{label_map.get(label, f'class_{label}')} {score:.2f}"
+                            draw.text((box[0], box[1] - 10), label_text, fill='red')
+                
+                # Save the image with predictions
+                img.save(os.path.join(output_dir, 'predictions', f'pred_{images_seen}.jpg'))
+                images_seen += 1
+            
+            if images_seen >= num_images:
+                break
+        except Exception as e:
+            print(f"Error during visualization: {e}")
+            continue
+    
+    print(f"Saved {images_seen} prediction visualizations to {os.path.join(output_dir, 'predictions')}")
+
 def main(args):
     # Set device
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -199,6 +331,16 @@ def main(args):
     
     # Create output directory
     os.makedirs(args.output_dir, exist_ok=True)
+    
+    # Set thread and optimization parameters for CPU
+    if device.type == 'cpu':
+        # Set number of threads for better CPU performance
+        torch.set_num_threads(args.num_workers)
+        print(f"Set PyTorch to use {args.num_workers} threads")
+        
+        # Use deterministic algorithms for better CPU performance
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
     
     # Load categories from annotation file
     with open(args.train_ann_file, 'r') as f:
@@ -209,8 +351,8 @@ def main(args):
     print(f"Training with {len(categories)} classes plus background")
     
     # Initialize datasets and dataloaders
-    dataset_train = COCODataset(args.train_img_dir, args.train_ann_file, transform=get_transform(train=True))
-    dataset_val = COCODataset(args.val_img_dir, args.val_ann_file, transform=get_transform(train=False))
+    dataset_train = COCODataset(args.train_img_dir, args.train_ann_file, transform=get_transform(train=True, input_size=args.img_size))
+    dataset_val = COCODataset(args.val_img_dir, args.val_ann_file, transform=get_transform(train=False, input_size=args.img_size))
     
     data_loader_train = torch.utils.data.DataLoader(
         dataset_train, batch_size=args.batch_size, shuffle=True,
@@ -279,6 +421,12 @@ def main(args):
         
         # Plot losses
         plot_losses(train_losses, val_losses, args.output_dir)
+    
+    # After training, visualize some predictions
+    print("Visualizing predictions on validation data...")
+    visualize_predictions(model, data_loader_val, device, args.output_dir, num_images=10)
+    
+    print(f"Training complete. Model saved to {os.path.join(args.output_dir, 'best_model.pth')}")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Train Faster R-CNN model")
@@ -307,9 +455,13 @@ if __name__ == "__main__":
     parser.add_argument('--lr-gamma', type=float, default=0.1,
                         help='gamma for learning rate scheduler')
     parser.add_argument('--num-workers', type=int, default=4,
-                        help='number of workers for data loading')
+                        help='number of workers for data loading and CPU threads')
     parser.add_argument('--resume', type=str, default='',
                         help='path to checkpoint to resume from')
+    parser.add_argument('--img-size', type=int, default=320,
+                        help='image size for training and inference (smaller is faster)')
+    parser.add_argument('--optimize-cpu', action='store_true',
+                        help='apply additional CPU optimizations')
     
     args = parser.parse_args()
     main(args)
