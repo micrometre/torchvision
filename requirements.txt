@@ -1,9 +1,11 @@
 imutils
 pillow
-Numpy
+numpy
 opencv-python
 opencv-python-headless 
 matplotlib
 tqdm
 labelImg
-ultralytics
+torch
+torchvision
+pycocotools
