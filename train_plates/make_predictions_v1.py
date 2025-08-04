@@ -168,7 +168,7 @@ def process_image(model_path, image_path, output_dir=None, threshold=0.1, save_o
     # Convert boolean mask to 0-255 values for proper PNG saving
     mask_image = (segmentation_mask * 255).astype(np.uint8)
     mask_pil = Image.fromarray(mask_image, mode='L')  # 'L' mode for grayscale
-    train_mask_path = os.path.join("dataset", "train", "masks", f"{base_name}.png")
+    train_mask_path = os.path.join("dataset", "train", "masks", f"{base_name}.jpg.png")
     mask_pil.save(train_mask_path)
     print(f"Segmentation mask saved to: {train_mask_path}")
     
@@ -266,7 +266,7 @@ def process_folder(model_path, folder_path, output_dir='./outputs', threshold=0.
             # Convert boolean mask to 0-255 values for proper PNG saving
             mask_image = (segmentation_mask * 255).astype(np.uint8)
             mask_pil = Image.fromarray(mask_image, mode='L')  # 'L' mode for grayscale
-            train_mask_path = os.path.join("dataset", "train", "masks", f"{base_name}.png")
+            train_mask_path = os.path.join("dataset", "train", "masks", f"{base_name}.jpg.png")
             mask_pil.save(train_mask_path)
             print(f"  Segmentation mask saved to: {train_mask_path}")
             
@@ -309,7 +309,7 @@ def main():
                        default='./model.pth',
                        help='Path to the trained model file (default: ./examples/model.pth)')
     parser.add_argument('--image', '-i',
-                       default='./picture1.jpg', 
+                       #default='./picture.jpg', 
                        help='Path to input image file (default: ./picture1.jpg)')
     parser.add_argument('--folder', '-f',
                        help='Path to folder containing images to process (alternative to --image)')

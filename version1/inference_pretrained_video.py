@@ -1,5 +1,5 @@
 
-import version1.torch_basic as torch_basic
+import torch
 import torchvision
 from torchvision import transforms
 from PIL import Image
@@ -26,7 +26,7 @@ def load_image(image_path):
     return img, transform(img).unsqueeze(0)
 
 def detect_objects(model, image_tensor):
-    with torch_basic.no_grad():
+    with torch.no_grad():
         return model(image_tensor)
 def get_coco_labels():
     """Return complete COCO labels list with 91 classes"""
@@ -74,7 +74,7 @@ def process_video_to_frames(video_path, model, output_dir="output", threshold=0.
                 transform = transforms.Compose([transforms.ToTensor()])
                 img_tensor = transform(pil_img).unsqueeze(0)
                 
-                with torch_basic.no_grad():
+                with torch.no_grad():
                     predictions = model(img_tensor)
                 
                 pred = predictions[0]
