@@ -5,7 +5,11 @@ opencv-python
 opencv-python-headless 
 matplotlib
 tqdm
-labelImg
 torch
 torchvision
 pycocotools
+tensorboard
+pandas
+mmcv
+ipython
+tensorboard
