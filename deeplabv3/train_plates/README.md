@@ -232,3 +232,25 @@ This project uses **segmentation** instead of **object detection**:
 - **`basic_test.py`**: Example of object detection approach (different method)
 
 Start with the training script and adjust parameters based on your dataset size and available compute resources!
+
+
+
+🚀 Performance Expectations
+
+For license plate segmentation with DeepLabV3:
+
+Good IoU: 0.7+ (70%+ pixel overlap)
+
+Excellent IoU: 0.8+ (80%+ pixel overlap)
+
+Ycurrent: 0.137 (13.7%) - needs more data/training
+
+
+🔄 Alternative Architectures
+
+experiment with other models:
+
+- U-Net: Lighter, faster training
+- PSPNet: Different pooling strategy
+- Faster R-CNN: Object detection (bounding boxes)
+- YOLO: Real-time detection
