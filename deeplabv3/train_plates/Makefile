@@ -26,7 +26,7 @@ resume:
 
 # Make predictions
 prediction:
-	python make_predictions_v1.py --model checkpoints/model.pth --image your_image.jpg
+	python make_predictions.py --model checkpoints/model.pth --image test_images/1.jpg
 
 # Clean generated files
 clean:
