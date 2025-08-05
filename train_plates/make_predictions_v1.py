@@ -168,7 +168,7 @@ def process_image(model_path, image_path, output_dir=None, threshold=0.1, save_o
     # Convert boolean mask to 0-255 values for proper PNG saving
     mask_image = (segmentation_mask * 255).astype(np.uint8)
     mask_pil = Image.fromarray(mask_image, mode='L')  # 'L' mode for grayscale
-    train_mask_path = os.path.join("dataset", "train", "masks", f"{base_name}.jpg.png")
+    train_mask_path = os.path.join("dataset", "train", "masks", f"{base_name}.png")
     mask_pil.save(train_mask_path)
     print(f"Segmentation mask saved to: {train_mask_path}")
     
@@ -204,104 +204,6 @@ def process_image(model_path, image_path, output_dir=None, threshold=0.1, save_o
     print(f"  - Coverage: {coverage:.2f}%")
 
 
-def process_folder(model_path, folder_path, output_dir='./outputs', threshold=0.1, save_overlay=False):
-    """
-    Process all images in a folder and generate predictions.
-    
-    Args:
-        model_path: Path to the trained model
-        folder_path: Path to the folder containing images
-        output_dir: Directory to save outputs
-        threshold: Confidence threshold for segmentation
-        save_overlay: Whether to save overlay images
-    """
-    # Supported image extensions
-    supported_extensions = {'.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.tif'}
-    
-    # Get all image files in the folder
-    image_files = []
-    for file in os.listdir(folder_path):
-        file_ext = os.path.splitext(file)[1].lower()
-        if file_ext in supported_extensions:
-            image_files.append(os.path.join(folder_path, file))
-    
-    if not image_files:
-        print(f"No supported image files found in {folder_path}")
-        print(f"Supported extensions: {', '.join(supported_extensions)}")
-        return
-    
-    print(f"Found {len(image_files)} image(s) to process")
-    
-    # Load model once for all images
-    print("Loading model...")
-    model = create_model(aux_loss=True)
-    checkpoint = torch.load(model_path, map_location='cpu', weights_only=False)
-    model.load_state_dict(checkpoint['model'])
-    model.eval()
-
-    # Set device
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    print(f"Using device: {device}")
-    model.to(device)
-    
-    # Process each image
-    for i, image_path in enumerate(image_files, 1):
-        print(f"\nProcessing image {i}/{len(image_files)}: {os.path.basename(image_path)}")
-        
-        try:
-            # Load and process image
-            image = Image.open(image_path).convert('RGB')
-            
-            # Save original image to dataset/train/images by default
-            base_name = os.path.splitext(os.path.basename(image_path))[0]
-            train_image_path = os.path.join("dataset", "train", "images", f"{base_name}.jpg")
-            image.save(train_image_path)
-            print(f"  Original image saved to: {train_image_path}")
-            
-            # Make prediction
-            outputs = pred(image=image, model=model, device=device)
-            
-            # Save segmentation mask to dataset/train/masks by default
-            segmentation_mask = outputs.cpu().numpy()[0] > threshold
-            # Convert boolean mask to 0-255 values for proper PNG saving
-            mask_image = (segmentation_mask * 255).astype(np.uint8)
-            mask_pil = Image.fromarray(mask_image, mode='L')  # 'L' mode for grayscale
-            train_mask_path = os.path.join("dataset", "train", "masks", f"{base_name}.jpg.png")
-            mask_pil.save(train_mask_path)
-            print(f"  Segmentation mask saved to: {train_mask_path}")
-            
-            # Generate output paths
-            os.makedirs(output_dir, exist_ok=True)
-            plot_path = os.path.join(output_dir, f"{base_name}_prediction.png")
-            overlay_path = os.path.join(output_dir, f"{base_name}_overlay.png")
-            
-            # Plot prediction
-            plot_prediction(image, outputs, threshold=threshold, output_path=plot_path)
-            
-            # Create and save overlay if requested
-            if save_overlay:
-                overlay_image = create_overlay(image, outputs, threshold=threshold)
-                overlay_image.save(overlay_path)
-                print(f"  Overlay saved to: {overlay_path}")
-            
-            # Print statistics
-            mask = outputs.cpu().numpy()[0] > threshold
-            detected_pixels = np.sum(mask)
-            total_pixels = mask.size
-            coverage = (detected_pixels / total_pixels) * 100
-            
-            print(f"  Detection statistics:")
-            print(f"    - Detected pixels: {detected_pixels:,}")
-            print(f"    - Total pixels: {total_pixels:,}")
-            print(f"    - Coverage: {coverage:.2f}%")
-            
-        except Exception as e:
-            print(f"  Error processing {image_path}: {e}")
-            continue
-    
-    print(f"\nCompleted processing {len(image_files)} images")
-
-
 def main():
     """Main function to parse arguments and process image."""
     parser = argparse.ArgumentParser(description='Make license plate segmentation predictions on images')
@@ -309,10 +211,8 @@ def main():
                        default='./model.pth',
                        help='Path to the trained model file (default: ./examples/model.pth)')
     parser.add_argument('--image', '-i',
-                       #default='./picture.jpg', 
-                       help='Path to input image file (default: ./picture1.jpg)')
-    parser.add_argument('--folder', '-f',
-                       help='Path to folder containing images to process (alternative to --image)')
+                       default='./picture1.jpg', 
+                       help='Path to input image file (default: ./examples/picture.jpg)')
     parser.add_argument('--threshold', '-t',
                        type=float,
                        default=0.1,
@@ -323,15 +223,6 @@ def main():
     
     args = parser.parse_args()
     
-    # Check that either image or folder is specified, but not both
-    if args.image and args.folder:
-        print("Error: Cannot specify both --image and --folder. Choose one.")
-        sys.exit(1)
-    
-    if not args.image and not args.folder:
-        print("Error: Must specify either --image or --folder.")
-        sys.exit(1)
-    
     # Set default output directory
     output_dir = './outputs'
     
@@ -340,39 +231,21 @@ def main():
         print(f"Error: Model file not found: {args.model}")
         sys.exit(1)
     
-    # Process based on input type
+    if not os.path.exists(args.image):
+        print(f"Error: Image file not found: {args.image}")
+        sys.exit(1)
+    
+    # Process image
     try:
-        if args.folder:
-            # Process folder
-            if not os.path.exists(args.folder):
-                print(f"Error: Folder not found: {args.folder}")
-                sys.exit(1)
-            if not os.path.isdir(args.folder):
-                print(f"Error: {args.folder} is not a directory")
-                sys.exit(1)
-            
-            process_folder(
-                model_path=args.model,
-                folder_path=args.folder,
-                output_dir=output_dir,
-                threshold=args.threshold,
-                save_overlay=args.save_overlay
-            )
-        else:
-            # Process single image
-            if not os.path.exists(args.image):
-                print(f"Error: Image file not found: {args.image}")
-                sys.exit(1)
-            
-            process_image(
-                model_path=args.model,
-                image_path=args.image,
-                output_dir=output_dir,
-                threshold=args.threshold,
-                save_overlay=args.save_overlay
-            )
+        process_image(
+            model_path=args.model,
+            image_path=args.image,
+            output_dir=output_dir,
+            threshold=args.threshold,
+            save_overlay=args.save_overlay
+        )
     except Exception as e:
-        print(f"Error processing: {e}")
+        print(f"Error processing image: {e}")
         sys.exit(1)
 
 

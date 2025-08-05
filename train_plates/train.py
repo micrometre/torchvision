@@ -86,7 +86,7 @@ class LicensePlateDataset(Dataset):
             mask = self.mask_transform(mask)
         
         # Convert mask to binary (0 or 1) and add channel dimension
-        mask = (mask > 0.5).float().unsqueeze(0)
+        mask = (mask > 0.5).float()
         
         return image, mask
 
@@ -175,6 +175,13 @@ def calculate_iou(predictions, targets, threshold=0.5):
 def train_epoch(model, dataloader, criterion, optimizer, device, epoch):
     """Train for one epoch."""
     model.train()
+    
+    # If batch size is 1, set BatchNorm to eval mode to avoid errors
+    if dataloader.batch_size == 1:
+        for module in model.modules():
+            if isinstance(module, (nn.BatchNorm1d, nn.BatchNorm2d, nn.BatchNorm3d)):
+                module.eval()
+    
     running_loss = 0.0
     running_iou = 0.0
     
@@ -356,6 +363,12 @@ def main():
         transform=train_transform, mask_transform=mask_transform
     )
     
+    # Check if we have enough samples for the batch size
+    if len(train_dataset) < args.batch_size:
+        print(f"Warning: Dataset has only {len(train_dataset)} samples but batch size is {args.batch_size}")
+        print(f"Reducing batch size to {len(train_dataset)}")
+        args.batch_size = len(train_dataset)
+    
     # Create validation dataset if validation paths exist
     val_dataset = None
     if os.path.exists(args.val_images) and os.path.exists(args.val_masks):
@@ -368,13 +381,15 @@ def main():
     
     # Create data loaders
     train_loader = DataLoader(
-        train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=2
+        train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=2,
+        drop_last=True  # Drop last incomplete batch to avoid BatchNorm issues
     )
     
     val_loader = None
     if val_dataset:
         val_loader = DataLoader(
-            val_dataset, batch_size=args.batch_size, shuffle=False, num_workers=2
+            val_dataset, batch_size=args.batch_size, shuffle=False, num_workers=2,
+            drop_last=False  # Keep all validation samples
         )
     
     # Create model
